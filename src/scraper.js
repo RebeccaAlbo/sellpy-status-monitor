@@ -1,22 +1,25 @@
-/**
+/*
  * Sellpy Inventory Watcher
  * * A specialized web automation tool built with Puppeteer to monitor 
  * high-demand e-commerce items that are currently "Reserved" in another user's cart.
  * It alerts the user the moment the item becomes "Available" again.
  */
 
-const puppeteer = require('puppeteer');
+
 const readline = require('readline');
 const notifier = require('node-notifier');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
+const SellpyWatcher = require('./watcher.js');
+const SellpyBuyer = require('./buyer.js');
+const { LOCALES, POLLING_INTERVAL } = require('./constants');
 
 // toggle for development
 const config = {
-    debug: true,
-    enableEmailAlert: true,
-    enableNoticiation: true,
-    enableAutoCart: false // "Experimental: Turn on to automate purchase"
+    debug: process.argv.includes('--debug') || process.argv.includes('-d'),
+    enableEmail: true,
+    enableNotify: true,
+    enableAutoCart: true, // "Experimental: Turn on to automate purchase"
 };
 
 // Initialize Readline interface for terminal-based user interaction
@@ -25,80 +28,38 @@ const rl = readline.createInterface({
     output: process.stdout 
 });
 
-/**
+/*
+ * Manages the User Interface and Monitoring Loop
+ */
+const ask = (query) => new Promise(resolve => rl.question(query, resolve));
+
+
+/*
  * Utility: Standard delay function using Promises
  * @param {number} ms - Milliseconds to sleep
  */
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * Scraper Logic: Extracts current item state from the DOM
- * Uses a robust waitForFunction to handle dynamic React/Vue content hydration.
- * * @param {Object} page - Puppeteer page instance
- * @param {string} url - Target product URL
- * @returns {string} - Item status: SOLD, RESERVED, AVAILABLE, or TIMEOUT
+
+/*
+ * Main Controller: Orchestrates the CLI flow and the Watcher Engine
  */
-const checkItemStatus = async (page, url) => {
-    try {
-        // Load page and wait for the initial DOM to be parsed
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
-
-        // Executes logic within the browser context to identify item state
-        const status = await page.waitForFunction(() => {
-            // Check for 'Sold' indicator
-            const sold = document.querySelector('div[data-testid="blob"]');
-            if (sold && sold.innerText.includes('Såld')) return 'SOLD';
-
-            // Check for 'Reserved' timer icon (item is in someone's cart)
-            const reserved = document.querySelector('i[data-testid="icon-CART_TIME"]');
-            if (reserved) return 'RESERVED';
-
-            // Check for 'Add to cart' button (item is free to buy)
-            const available = Array.from(document.querySelectorAll('span'))
-                                   .find(el => el.innerText.includes('Lägg i varukorg'));
-            if (available) return 'AVAILABLE';
-
-            return null; // Function retries until a state is found or timeout occurs
-        }, { timeout: 5000 }).then(handle => handle.jsonValue()).catch(() => 'TIMEOUT');
-        
-        return status;
-
-    } catch (error) {
-        console.error('\n❌ Scraper Error:', error.message);
-        return 'ERROR';
-    }
-};
-
-/**
- * Orchestrator: Manages the User Interface and Monitoring Loop
- */
-const ask = (query) => new Promise(resolve => rl.question(query, resolve));
-
 const startUI = async () => {
+    // 1. Splash Screen
     console.log(`
-=========================================
-       SELLPY INVENTORY WATCHER
-=========================================
-This tool monitors "Reserved" items and alerts
-you the moment they become available.
------------------------------------------
+    =========================================
+           SELLPY INVENTORY WATCHER
+    =========================================
     `);
 
-    // Step 1: Get the URL
-    let urlInput = await ask('🔗 Paste the Sellpy item URL: ');
-    let url = urlInput.trim();
+    // 2. Gather User Inputs (The "View" layer)
+    const url = await getValidatedURL();
+    const match = url.match(/sellpy\.(se|de|at|com)/);
+    const tld = match ? match[1] : 'com'; // Default to English
+    const locale = LOCALES[tld] || LOCALES['com'];   
 
-    if (!url.includes('sellpy')) {
-        console.log('❌ Error: Please enter a valid Sellpy URL.');
-        rl.close();
-        return startUI();
-    }
-
-    // Step 2: Ask if they want desktop notifications
-    let wantsNote = await ask('🔔 Would you like to receive a desktop notification? (y/n): ');
-    config.enableNotification = wantsNote.toLowerCase() === 'y';
-
-    if (config.enableNotification) {
+    config.enableNotify = (await ask('Enable desktop notifications? (y/n): ')).toLowerCase() === 'y';
+    if (config.enableNotify) {
         notifier.notify({
             title: 'Alerts are on',
             message: 'You will be notified!',
@@ -107,87 +68,127 @@ you the moment they become available.
         });
     }
 
-    // Step 3: Ask if they want email notifications
-    let wantsEmail = await ask('📧 Would you like to receive an email alert? (y/n): ');
-    config.enableEmailAlert = wantsEmail.toLowerCase() === 'y';
+    config.enableEmail = (await ask('Enable email alerts? (y/n): ')).toLowerCase() === 'y';
     
-    let recipientEmail = null;
-    if (config.enableEmailAlert) {
-        recipientEmail = await ask('📬 Enter the recipient email address: ');
-        recipientEmail = recipientEmail.trim();
+    let emailAddress = null;
+    if (config.enableEmail) {
+        emailAddress = await getValidatedEmail();
     }
 
-    console.log(`\n🚀 Starting monitor...`);
-    console.log(`📡 Target: ${url}`);
-    if (config.enableEmailAlert) console.log(`📩 Alerts will be sent to: ${recipientEmail}`);
+    // 3. Initialize the Engine
+    const watcher = new SellpyWatcher(
+        url,
+        config.debug,
+        locale
+    );
+
+    console.log(`\n Starting monitor...`);
+    console.log(`Target: ${url}`);
     console.log('-----------------------------------------\n');
+    await watcher.init();
 
-    const browser = await puppeteer.launch({ headless: "new" });
-    const page = await browser.newPage();
-    
-    console.log('⏳ Checking initial status...');
-    let status = await checkItemStatus(page, url);
-    updateUI(status);
+    try {
+        let status = await watcher.checkStatus();
+        if (status === 'RESERVED') updateUI(status);
 
-        // Configuration for the monitoring loop
-        const sleepTimer = 15000; // 15s delay to prevent IP rate-limiting/shadow-banning
-    const continueOn = 'RESERVED';
-
-        // Entering the "Watch" phase if the item is currently reserved
-    if (status === continueOn) {
-        console.log(`Item is reserved. Starting watcher (Polling every ${sleepTimer/1000}s)...`);
-        
-        while (true) {
-            status = await checkItemStatus(page, url);
-            if (config.debug) console.log(`[${new Date().toLocaleTimeString()}] Status: ${status}`);
-
-            if (status === continueOn) {
-                await sleep(sleepTimer);
-                continue; 
-            }
-
-            if (status === 'AVAILABLE') {
-                // Trigger OS Desktop Notification
-                if (config.enableNotification) {
-                    notifier.notify({
-                        title: 'Sellpy Alert!',
-                        message: 'THE ITEM IS AVAILABLE! Grab it now!',
-                        sound: true, 
-                        wait: true   
-                    });
-                }
-
-                // Conditional Email Notification
-                if (config.enableEmailAlert && recipientEmail) {
-                    await sendEmailAlert(url, recipientEmail); 
-                }
-
-                if (config.enableAutoCart) {
-                    await addToCart(page);
-                }
-                break; 
+        // 4. The Monitoring Loop
+        while (status === 'RESERVED' || status === 'TIMEOUT' || status === 'ERROR') {
+            await sleep(POLLING_INTERVAL);
+            
+            try {
+                status = await watcher.checkStatus();
+            } catch (loopError) {
+                console.error('⚠️ Connection interrupted. Re-initializing...');
+                status = 'ERROR';
+                // Try to restart the browser if it fails completely
+                await watcher.stop();
+                await watcher.init();
             }
             
-            // Handle other statuses (SOLD, ERROR, TIMEOUT)
-            if (status === 'SOLD') {
-                console.log('❌ Item is sold. Monitoring stopped.');
-                break;
-            } else if (status === 'ERROR' || status === 'TIMEOUT') {
-                console.log('⚠️ Connection error. Retrying...');
-                await sleep(sleepTimer);
-                continue;
-            }
-            break; // Exit loop if item is SOLD or AVAILABLE
+            if (config.debug) console.log(`[${new Date().toLocaleTimeString()}] Status: ${status}`);
         }
-        updateUI(status);
-    }
+        updateUI(status); 
+        if (status === 'AVAILABLE') {
+            await handleSuccess(watcher, url, emailAddress, locale);
+        }
 
-    // Cleanup resources
-    rl.close();
-    await browser.close();
+
+    } catch (error) {
+        console.error('\n🛑 Critical Runtime Error:', error.message);
+    } finally {
+        await watcher.stop();
+        rl.close();
+    }
 };
 
-/**
+/*
+ * Helper: Logic for when an item is found
+ */
+const handleSuccess = async (watcher, url, email, locale) => {
+
+    if (config.enableNotify) {
+        notifier.notify({ title: 'Sellpy Alert!', message: 'Item is AVAILABLE!', sound: true });
+    }
+
+    if (config.enableEmail && email) {
+        await sendEmailAlert(url, email);
+    }
+
+    if (config.enableAutoCart) {
+        const buyer = new SellpyBuyer(
+            url,
+            config.debug,
+            locale
+        );
+        await buyer.init();
+        await buyer.autoAddToCart();
+
+        console.log('Item added to cart! Browser stays open\nSwitch to the browser to checkout manually!.');
+        while (true) {
+            let wantsContinue = await ask('Type \'q\' to close when done. : ');
+            let continueMonitoring = wantsContinue.toLowerCase().trim() === 'q';
+            if (continueMonitoring) break;
+            else console.log('not a valid command please try again.');
+        }
+        await buyer.stop();
+    }
+};
+
+const getValidatedURL = async () => {
+    if (config.debug) {
+        const useTest = (await ask('Would you like to use the testing item link? (y/n): ')).toLowerCase() === 'y';
+        if (useTest) {
+            console.log(`[DEBUG] using test URL: "${process.env.TEST_LINK}"`);
+            return process.env.TEST_LINK;
+        }
+    }
+
+    while (true) {
+        let input = await ask('Paste Sellpy URL: ');
+        const sellpyRegex = /sellpy\.(se|de|at|com)\/item\/\w+/;
+        
+        if (sellpyRegex.test(input)) {
+            return input.trim();
+        }
+        
+        console.log('Invalid Sellpy link. Format: https://www.sellpy.se/item/ID');
+    }
+};
+
+const getValidatedEmail = async () => {
+    while (true) {
+        const email = await ask('Enter recipient email: ');
+        const trimmedEmail = email.trim();
+        
+        if (trimmedEmail.includes('@') && trimmedEmail.includes('.', trimmedEmail.indexOf('@'))) {
+            return trimmedEmail;
+        }
+        
+        console.log('Please enter a valid email address (e.g., name@example.com)');
+    }
+};
+
+/*
  * Updated sendEmailAlert to accept a dynamic recipient
  */
 const sendEmailAlert = async (itemUrl, recipientEmail) => {
@@ -207,30 +208,26 @@ const sendEmailAlert = async (itemUrl, recipientEmail) => {
     const mailOptions = {
         from: `"Sellpy Watcher" <${process.env.EMAIL_USER}>`,
         to: recipientEmail, // Uses the email entered in the prompt
-        subject: '🛒 ITEM AVAILABLE: Grab it now!',
+        subject: 'ITEM AVAILABLE: Grab it now!',
         html: `<b>The item you were watching is now available!</b><br><br><a href="${itemUrl}">Click here to buy it now</a>`
     };
 
     try {
         await transporter.sendMail(mailOptions);
-        console.log('📧 Email alert sent successfully!');
+        console.log('Email alert sent successfully!');
     } catch (error) {
         console.error('❌ Failed to send email:', error.message);
     }
 };
 
-const addToCart = async () => {
-
-}
-
-/**
+/*
  * View Layer: Handles terminal output formatting
  * @param {string} status - The status key to display
  */
 const updateUI = (status) => {
     const messages = {
         'SOLD':      'Status: 🔴 SOLD (This item is gone!)',
-        'RESERVED':  'Status: 🟡 RESERVED (In someone\'s cart right now)',
+        'RESERVED':  'Status: 🟡 RESERVED (In someone\'s cart right now) monitoring until it becomes available or sold...',
         'AVAILABLE': 'Status: 🟢 AVAILABLE (Grab it while it\'s hot!)',
         'TIMEOUT':   'Status: ⚠️ NOT FOUND (Could not detect page elements)',
         'ERROR':     'Status: ❌ ERROR (Connection failed)'
