@@ -6,7 +6,7 @@ A specialized web automation tool built with **Puppeteer** to monitor high-deman
 
 ## Features
 
-* **Real-time Monitoring:** Polls Sellpy pages every 15 seconds to check item status.
+* **Real-time Monitoring:** Polls Sellpy pages every minute to check item status.
 * **Smart Detection:** Distinguishes between `AVAILABLE`, `RESERVED`, and `SOLD`.
 * **Desktop Notifications:** Immediate system alerts via `node-notifier`.
 * **Email Alerts:** Automated emails sent to your inbox when an item is back in stock.
@@ -57,6 +57,15 @@ Run the main script to start the CLI interface:
 ```bash
 node scraper.js
 ```
+
+## Options
+
+To use the faster mode, run:
+
+```bash
+node scraper.js --turbo
+```
+
 
 ### Workflow
 1.  **Paste URL:** Enter the full Sellpy item link (e.g., `https://www.sellpy.se/item/...`).

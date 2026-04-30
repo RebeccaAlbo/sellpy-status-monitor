@@ -12,11 +12,12 @@ require('dotenv').config();
 const nodemailer = require('nodemailer');
 const SellpyWatcher = require('./watcher.js');
 const SellpyBuyer = require('./buyer.js');
-const { LOCALES, POLLING_INTERVAL } = require('./constants');
+const { LOCALES, SLOW_INTERVAL, FAST_INTERVAL } = require('./constants');
 
 // toggle for development
 const config = {
     debug: process.argv.includes('--debug') || process.argv.includes('-d'),
+    POLLING_INTERVAL: (process.argv.includes('--turbo')) ? FAST_INTERVAL : SLOW_INTERVAL,
     enableEmail: true,
     enableNotify: true,
     enableAutoCart: true, // "Experimental: Turn on to automate purchase"

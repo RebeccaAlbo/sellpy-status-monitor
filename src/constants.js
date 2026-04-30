@@ -1,8 +1,8 @@
 
 // config.js
 module.exports = {
-    POLLING_INTERVAL: 15000,
-    MAX_ERRORS: 5,
+    SLOW_INTERVAL: 60000,
+    FAST_INTERVAL: 15000,
     
     LOCALES: {
         'se': {
