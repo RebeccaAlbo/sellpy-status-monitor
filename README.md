@@ -58,12 +58,6 @@ Run the main script to start the CLI interface:
 node scraper.js
 ```
 
-### Options
-* **Debug Mode:** To see the browser in action and view console logs, run:
-    ```bash
-    node scraper.js --debug
-    ```
-
 ### Workflow
 1.  **Paste URL:** Enter the full Sellpy item link (e.g., `https://www.sellpy.se/item/...`).
 2.  **Set Alerts:** Choose whether you want desktop notifications or email alerts.
