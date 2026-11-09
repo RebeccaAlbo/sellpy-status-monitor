@@ -1,9 +1,15 @@
 
 // config.js
 module.exports = {
-    SLOW_INTERVAL: 60000,
-    FAST_INTERVAL: 15000,
+    SLOW_INTERVAL: 20000,
+    FAST_INTERVAL: 5000,
     
+    BACKOFF: {
+        BASE_MS: 1000,      // 1s
+        MAX_MS: 60000,      // cap at 60s
+        MAX_ATTEMPTS: 5,
+    },
+     
     LOCALES: {
         'se': {
             buyButton: 'Lägg i varukorg',
