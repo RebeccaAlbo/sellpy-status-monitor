@@ -126,55 +126,56 @@ const startUI = async () => {
  * Helper: Logic for when an item is found
  */
 const handleSuccess = async (watcher, url, email, locale) => {
-
     if (config.enableNotify) {
-        notifier.notify({ title: 'Sellpy Alert!', message: 'Item is AVAILABLE!', sound: true });
+        notifier.notify({
+            title: 'Sellpy Alert!',
+            message: 'Item is AVAILABLE!',
+            sound: true,
+        });
     }
 
     if (config.enableEmail && email) {
         await sendEmailAlert(url, email);
     }
 
-    if (config.enableAutoCart) {
-        const buyer = new SellpyBuyer(
-            url,
-            config.debug,
-            locale
-        );
-        await buyer.init();
-        await buyer.autoAddToCart();
+    if (!config.enableAutoCart) return;
 
-        console.log('Item added to cart! Browser stays open\nSwitch to the browser to checkout manually!.');
-        while (true) {
-            let wantsContinue = await ask('Type \'q\' to close when done. : ');
-            let continueMonitoring = wantsContinue.toLowerCase().trim() === 'q';
-            if (continueMonitoring) break;
-            else console.log('not a valid command please try again.');
-        }
-        await buyer.stop();
-    }
+    const buyer = new SellpyBuyer(url, config.debug, locale);
+    await buyer.init();
+    await buyer.autoAddToCart();
+
+    console.log(
+        'Item added to cart! Browser stays open.\n' +
+        'Switch to the browser to checkout manually.\n' +
+        'Press "q" when you are done to close the browser.'
+    );
+
+    await waitForKeypress('q');
+    await buyer.stop();
 };
 
-const getValidatedURL = async () => {
-    if (config.debug) {
-        const useTest = (await ask('Would you like to use the testing item link? (y/n): ')).toLowerCase() === 'y';
-        if (useTest) {
-            console.log(`[DEBUG] using test URL: "${process.env.TEST_LINK}"`);
-            return process.env.TEST_LINK;
-        }
-    }
+/*
+ * Resolves when the given single character key is pressed on stdin.
+ */
+const waitForKeypress = (expected) => new Promise((resolve) => {
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
 
-    while (true) {
-        let input = await ask('Paste Sellpy URL: ');
-        const sellpyRegex = /sellpy\.(se|de|at|com)\/item\/\w+/;
-        
-        if (sellpyRegex.test(input)) {
-            return input.trim();
+    const onData = (key) => {
+        // Ctrl-C should still kill the process
+        if (key === '\u0003') process.exit(0);
+        if (key.toLowerCase() === expected) {
+            stdin.setRawMode(false);
+            stdin.pause();
+            stdin.removeListener('data', onData);
+            resolve();
         }
-        
-        console.log('Invalid Sellpy link. Format: https://www.sellpy.se/item/ID');
-    }
-};
+    };
+
+    stdin.on('data', onData);
+});
 
 const getValidatedEmail = async () => {
     while (true) {
